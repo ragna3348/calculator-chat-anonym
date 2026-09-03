@@ -129,6 +129,16 @@ class AppRepository(
                 status = MessageStatus.READ
             )
         )
+
+        // Sync timer update to cloud peer
+        val chat = dao.getChatByIdDirect(chatId)
+        val receiverMath = chat?.mathUsername
+        val myMath = settingsManager.settings.value.mathUsername
+        if (!receiverMath.isNullOrBlank() && myMath.isNotBlank()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                firebaseSyncManager.sendTimerUpdateToCloud(myMath, receiverMath, seconds)
+            }
+        }
     }
 
     suspend fun sendMessage(
@@ -169,7 +179,7 @@ class AppRepository(
         val preview = if (mediaType == MediaType.TEXT) plainText else "[${mediaType.name}] $plainText"
         dao.updateChatPreview(chatId, preview, now, 0)
 
-        // Send to Firebase Cloud Firestore for real-time internet delivery
+        // Send to Firebase Cloud Firestore for real-time internet delivery with burnSeconds
         val receiverMath = chat?.mathUsername
         val myMath = settingsManager.settings.value.mathUsername
         if (!receiverMath.isNullOrBlank() && myMath.isNotBlank()) {
@@ -184,7 +194,8 @@ class AppRepository(
                     checksum = enc.checksum,
                     mediaType = mediaType,
                     mediaFileName = mediaFileName,
-                    mediaFileSizeFormatted = mediaFileSizeFormatted
+                    mediaFileSizeFormatted = mediaFileSizeFormatted,
+                    burnSeconds = disappearingSeconds
                 )
             }
         }
@@ -305,7 +316,71 @@ class AppRepository(
 
     suspend fun purgeExpiredMessages(): Int {
         val now = System.currentTimeMillis()
+        val expired = dao.getExpiredSelfDestructMessages(now)
+        if (expired.isNotEmpty()) {
+            val myMath = settingsManager.settings.value.mathUsername
+            for (msg in expired) {
+                val chat = dao.getChatByIdDirect(msg.chatId)
+                val receiverMath = chat?.mathUsername
+                if (!receiverMath.isNullOrBlank() && myMath.isNotBlank()) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        firebaseSyncManager.sendDeleteMessageToCloud(myMath, receiverMath, msg.checksum, msg.timestamp)
+                    }
+                }
+            }
+        }
         return dao.purgeExpiredSelfDestructMessages(now)
+    }
+
+    suspend fun deleteMessage(message: MessageEntity, syncBothSides: Boolean = true) {
+        dao.deleteMessageById(message.id)
+        if (syncBothSides) {
+            val chat = dao.getChatByIdDirect(message.chatId)
+            val receiverMath = chat?.mathUsername
+            val myMath = settingsManager.settings.value.mathUsername
+            if (!receiverMath.isNullOrBlank() && myMath.isNotBlank()) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    firebaseSyncManager.sendDeleteMessageToCloud(
+                        senderMathUsername = myMath,
+                        receiverMathUsername = receiverMath,
+                        checksum = message.checksum,
+                        timestamp = message.timestamp
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun clearChatMessages(chatId: String, syncBothSides: Boolean = true) {
+        val chat = dao.getChatByIdDirect(chatId)
+        dao.clearMessagesForChat(chatId)
+        dao.updateChatPreview(chatId, "", System.currentTimeMillis(), 0)
+
+        if (syncBothSides && chat != null) {
+            val receiverMath = chat.mathUsername
+            val myMath = settingsManager.settings.value.mathUsername
+            if (receiverMath.isNotBlank() && myMath.isNotBlank()) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    firebaseSyncManager.sendClearChatToCloud(myMath, receiverMath)
+                }
+            }
+        }
+    }
+
+    suspend fun deleteChatRoom(chatId: String, syncBothSides: Boolean = true) {
+        val chat = dao.getChatByIdDirect(chatId)
+        dao.clearMessagesForChat(chatId)
+        dao.deleteChatById(chatId)
+
+        if (syncBothSides && chat != null) {
+            val receiverMath = chat.mathUsername
+            val myMath = settingsManager.settings.value.mathUsername
+            if (receiverMath.isNotBlank() && myMath.isNotBlank()) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    firebaseSyncManager.sendClearChatToCloud(myMath, receiverMath)
+                }
+            }
+        }
     }
 
     suspend fun performCloudBackup(): String = withContext(Dispatchers.IO) {

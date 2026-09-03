@@ -47,6 +47,12 @@ interface AppDao {
     @Query("UPDATE chats SET disappearingTimerSeconds = :seconds WHERE id = :chatId")
     suspend fun updateDisappearingTimer(chatId: String, seconds: Int)
 
+    @Query("UPDATE chats SET isOnline = :isOnline, lastSeen = :lastSeen WHERE mathUsername = :mathUsername OR id = :mathUsername")
+    suspend fun updateChatOnlineStatus(mathUsername: String, isOnline: Boolean, lastSeen: Long)
+
+    @Query("DELETE FROM chats WHERE id = :chatId")
+    suspend fun deleteChatById(chatId: String)
+
     @Delete
     suspend fun deleteChat(chat: ChatEntity)
 
@@ -74,6 +80,12 @@ interface AppDao {
 
     @Query("DELETE FROM messages WHERE id = :messageId")
     suspend fun deleteMessageById(messageId: Long)
+
+    @Query("DELETE FROM messages WHERE checksum = :checksum OR (chatId = :chatId AND timestamp = :timestamp)")
+    suspend fun deleteMessageByChecksumOrTimestamp(chatId: String, checksum: String, timestamp: Long)
+
+    @Query("SELECT * FROM messages WHERE burnTimestamp IS NOT NULL AND burnTimestamp <= :currentTime")
+    suspend fun getExpiredSelfDestructMessages(currentTime: Long): List<MessageEntity>
 
     @Query("DELETE FROM messages WHERE burnTimestamp IS NOT NULL AND burnTimestamp <= :currentTime")
     suspend fun purgeExpiredSelfDestructMessages(currentTime: Long): Int

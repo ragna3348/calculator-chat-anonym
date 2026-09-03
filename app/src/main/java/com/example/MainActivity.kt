@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
             var appMode by remember { mutableStateOf(AppDisplayMode.CALCULATOR) }
             var showAuthDialog by remember { mutableStateOf(false) }
 
-            // Listen for Calculator secret unlock & direct contact chat trigger
+            // Listen for Calculator secret unlock
             LaunchedEffect(Unit) {
                 calculatorViewModel.events.collectLatest { event ->
                     when (event) {
@@ -97,15 +97,6 @@ class MainActivity : ComponentActivity() {
                                 appMode = AppDisplayMode.VAULT
                                 Toast.makeText(applicationContext, "Brankas Rahasia Terbuka", Toast.LENGTH_SHORT).show()
                             }
-                        }
-                        is CalculatorEvent.OpenChatWithContact -> {
-                            vaultViewModel.selectChat(event.chatId)
-                            appMode = AppDisplayMode.VAULT
-                            Toast.makeText(
-                                applicationContext,
-                                "Membuka Obrolan: ${event.contactName} [${event.mathUsername}]",
-                                Toast.LENGTH_SHORT
-                            ).show()
                         }
                         is CalculatorEvent.ShowToast -> {
                             Toast.makeText(applicationContext, event.message, Toast.LENGTH_SHORT).show()
@@ -239,6 +230,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::vaultViewModel.isInitialized) {
+            vaultViewModel.setUserPresence(true)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (::vaultViewModel.isInitialized) {
+            vaultViewModel.setUserPresence(false)
         }
     }
 }

@@ -1,8 +1,10 @@
 package com.example.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
@@ -30,6 +33,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -92,6 +96,7 @@ fun ChatListScreen(
 
     var isSearchActive by remember { mutableStateOf(false) }
     var showAddContactDialog by remember { mutableStateOf(false) }
+    var chatToDelete by remember { mutableStateOf<ChatEntity?>(null) }
 
     val filteredChats = chats.filter { chat ->
         val matchesTab = when (filterTab) {
@@ -376,7 +381,7 @@ fun ChatListScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Gunakan tombol Tambah Kontak atau ketik formula di kalkulator.",
+                            text = "Gunakan tombol Tambah Kontak untuk memulai obrolan rahasia baru.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             textAlign = TextAlign.Center
@@ -393,12 +398,42 @@ fun ChatListScreen(
                     items(filteredChats, key = { it.id }) { chat ->
                         ChatItemRow(
                             chat = chat,
-                            onClick = { viewModel.selectChat(chat.id) }
+                            onClick = { viewModel.selectChat(chat.id) },
+                            onDelete = { chatToDelete = chat }
                         )
                     }
                 }
             }
         }
+    }
+
+    // Confirm Delete Chat Room Dialog (Dual-Device)
+    if (chatToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { chatToDelete = null },
+            title = { Text("Hapus Ruang Obrolan?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Ruang obrolan dengan '${chatToDelete!!.contactName}' akan dihapus permanen untuk kedua perangkat.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val c = chatToDelete
+                        chatToDelete = null
+                        if (c != null) {
+                            viewModel.deleteChatRoom(c.id)
+                        }
+                    }
+                ) {
+                    Text("Hapus untuk Semua", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { chatToDelete = null }) {
+                    Text("Batal")
+                }
+            }
+        )
     }
 
     // Math Username Setup / Change Dialog
@@ -574,18 +609,26 @@ private fun AddContactManualDialog(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatItemRow(
     chat: ChatEntity,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 ) {
-    val dateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+    val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val avatarColor = Color(chat.contactAvatarColor)
+    val presenceStatus = remember(chat.isOnline, chat.lastSeen) {
+        formatPresenceRelative(chat.isOnline, chat.lastSeen)
+    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onDelete
+            )
             .testTag("chat_item_${chat.id}"),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
@@ -683,6 +726,15 @@ fun ChatItemRow(
                     )
                 }
 
+                if (presenceStatus.isNotBlank()) {
+                    Text(
+                        text = presenceStatus,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 10.sp,
+                        color = if (chat.isOnline) Color(0xFF10B981) else MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(3.dp))
 
                 Row(
@@ -753,10 +805,40 @@ fun ChatItemRow(
                                     fontWeight = FontWeight.Bold
                                 )
                             }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        IconButton(
+                            onClick = onDelete,
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Hapus Obrolan",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier.size(15.dp)
+                            )
                         }
                     }
                 }
             }
         }
+    }
+}
+
+private fun formatPresenceRelative(isOnline: Boolean, lastSeen: Long): String {
+    if (isOnline) return "Online"
+    if (lastSeen <= 0L) return ""
+    val diff = (System.currentTimeMillis() - lastSeen).coerceAtLeast(0L)
+    val seconds = diff / 1000
+    val minutes = seconds / 60
+    val hours = minutes / 60
+
+    return when {
+        seconds < 15 -> "Aktif baru saja"
+        seconds < 60 -> "Aktif ${seconds} dtk lalu"
+        minutes < 60 -> "Aktif ${minutes} mnt lalu"
+        hours < 24 -> "Aktif ${hours} jam lalu"
+        else -> ""
     }
 }

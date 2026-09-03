@@ -7,8 +7,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,13 +31,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Fingerprint
@@ -47,6 +51,7 @@ import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -110,6 +115,18 @@ fun ChatConversationScreen(
     var showTimerDialog by remember { mutableStateOf(false) }
     var showFingerprintDialog by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
+    var showDeleteRoomDialog by remember { mutableStateOf(false) }
+    var messageToDelete by remember { mutableStateOf<MessageEntity?>(null) }
+
+    // Ticker to refresh presence relative time string
+    var presenceTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(chat?.isOnline, chat?.lastSeen) {
+        while (true) {
+            delay(5000)
+            presenceTick = System.currentTimeMillis()
+        }
+    }
 
     val listState = rememberLazyListState()
 
@@ -124,7 +141,8 @@ fun ChatConversationScreen(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            .imePadding(),
         color = MaterialTheme.colorScheme.background
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -205,8 +223,9 @@ fun ChatConversationScreen(
                                 modifier = Modifier.size(11.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
+                            val presenceText = formatPresenceStatus(chat!!.isOnline, chat!!.lastSeen, presenceTick)
                             Text(
-                                text = if (chat!!.isOnline) "Online • E2EE AES-256" else "Terenkripsi • Luring",
+                                text = "$presenceText • E2EE AES-256",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (chat!!.isOnline) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -237,7 +256,7 @@ fun ChatConversationScreen(
                         )
                     }
 
-                    // Overflow Menu (Export CSV, PDF)
+                    // Overflow Menu
                     Box {
                         IconButton(
                             onClick = { showMenu = true },
@@ -254,6 +273,16 @@ fun ChatConversationScreen(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Atur Pesan Musnah") },
+                                onClick = {
+                                    showMenu = false
+                                    showTimerDialog = true
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Timer, contentDescription = null)
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Ekspor Obrolan (CSV)") },
                                 onClick = {
@@ -275,13 +304,23 @@ fun ChatConversationScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Atur Pesan Musnah") },
+                                text = { Text("Bersihkan Isi Obrolan", color = MaterialTheme.colorScheme.error) },
                                 onClick = {
                                     showMenu = false
-                                    showTimerDialog = true
+                                    showClearChatDialog = true
                                 },
                                 leadingIcon = {
-                                    Icon(Icons.Default.Timer, contentDescription = null)
+                                    Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Hapus Ruang Obrolan", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMenu = false
+                                    showDeleteRoomDialog = true
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                                 }
                             )
                         }
@@ -330,7 +369,10 @@ fun ChatConversationScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg = msg)
+                    MessageBubble(
+                        msg = msg,
+                        onDelete = { messageToDelete = msg }
+                    )
                 }
             }
 
@@ -354,7 +396,7 @@ fun ChatConversationScreen(
                     )
                 }
 
-                // Input Field
+                // Input Field - Enter adds newline, send button submits
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { inputText = it },
@@ -372,15 +414,7 @@ fun ChatConversationScreen(
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Send
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onSend = {
-                            if (inputText.isNotBlank()) {
-                                viewModel.sendMessage(inputText)
-                                inputText = ""
-                            }
-                        }
+                        imeAction = ImeAction.Default
                     )
                 )
 
@@ -423,6 +457,81 @@ fun ChatConversationScreen(
         }
     }
 
+    // CONFIRM DELETE SINGLE MESSAGE (FOR BOTH DEVICES)
+    if (messageToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { messageToDelete = null },
+            title = { Text("Hapus Pesan?", fontWeight = FontWeight.Bold) },
+            text = { Text("Pesan ini akan dihapus permanen untuk kedua perangkat.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val msg = messageToDelete
+                        messageToDelete = null
+                        if (msg != null) {
+                            viewModel.deleteMessage(msg)
+                        }
+                    }
+                ) {
+                    Text("Hapus untuk Semua", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { messageToDelete = null }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+
+    // CONFIRM CLEAR ALL MESSAGES (FOR BOTH DEVICES)
+    if (showClearChatDialog && chat != null) {
+        AlertDialog(
+            onDismissRequest = { showClearChatDialog = false },
+            title = { Text("Bersihkan Semua Obrolan?", fontWeight = FontWeight.Bold) },
+            text = { Text("Semua pesan dalam obrolan ini akan dihapus dari kedua perangkat.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearChatDialog = false
+                        viewModel.clearCurrentChat(chat!!.id)
+                    }
+                ) {
+                    Text("Bersihkan Semua", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearChatDialog = false }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+
+    // CONFIRM DELETE CHAT ROOM (FOR BOTH DEVICES)
+    if (showDeleteRoomDialog && chat != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteRoomDialog = false },
+            title = { Text("Hapus Ruang Obrolan?", fontWeight = FontWeight.Bold) },
+            text = { Text("Ruang obrolan ini akan dihapus permanen untuk kedua perangkat.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteRoomDialog = false
+                        viewModel.deleteChatRoom(chat!!.id)
+                    }
+                ) {
+                    Text("Hapus Ruang Obrolan", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteRoomDialog = false }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+
     // DISAPPEARING TIMER SELECTOR DIALOG
     if (showTimerDialog && chat != null) {
         DisappearingTimerDialog(
@@ -463,11 +572,17 @@ fun ChatConversationScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MessageBubble(msg: MessageEntity) {
+fun MessageBubble(
+    msg: MessageEntity,
+    onDelete: () -> Unit = {}
+) {
     val isMe = msg.senderId == "me"
-    val dateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-    val decryptedText = CryptoEngine.decrypt(msg.ciphertext, msg.iv, msg.salt)
+    val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val decryptedText = remember(msg.ciphertext, msg.iv, msg.salt) {
+        CryptoEngine.decrypt(msg.ciphertext, msg.iv, msg.salt)
+    }
 
     // Countdown calculation for disappearing messages
     var secondsLeft by remember { mutableLongStateOf(0L) }
@@ -524,6 +639,10 @@ fun MessageBubble(msg: MessageEntity) {
             modifier = Modifier
                 .widthIn(max = 300.dp)
                 .testTag("msg_bubble_${msg.id}")
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { onDelete() }
+                )
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 // Sender name if not me
@@ -1015,3 +1134,26 @@ fun AttachmentBottomSheet(
         }
     }
 }
+
+private fun formatPresenceStatus(isOnline: Boolean, lastSeen: Long, currentTick: Long): String {
+    if (isOnline) return "Online"
+    if (lastSeen <= 0L) return "Luring"
+    val diff = (currentTick - lastSeen).coerceAtLeast(0L)
+    val seconds = diff / 1000
+    val minutes = seconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
+
+    return when {
+        seconds < 15 -> "Aktif baru saja"
+        seconds < 60 -> "Aktif ${seconds} dtk lalu"
+        minutes < 60 -> "Aktif ${minutes} mnt lalu"
+        hours < 24 -> "Aktif ${hours} jam lalu"
+        days < 7 -> "Aktif ${days} hari lalu"
+        else -> {
+            val sdf = SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault())
+            "Aktif ${sdf.format(Date(lastSeen))}"
+        }
+    }
+}
+

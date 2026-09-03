@@ -20,21 +20,11 @@ data class CalculatorUiState(
     val formulaString: String = "",
     val previousResult: String? = null,
     val isNewNumber: Boolean = true,
-    val isSecretUnlocked: Boolean = false,
-    val showHistoryDialog: Boolean = false,
-    val matchedContact: com.example.data.model.ChatEntity? = null,
-    val currentMathFormulaCandidate: String? = null,
-    val showAddContactDialog: Boolean = false,
-    val pendingAddFormula: String = ""
+    val showHistoryDialog: Boolean = false
 )
 
 sealed class CalculatorEvent {
     data object OpenSecretVault : CalculatorEvent()
-    data class OpenChatWithContact(
-        val chatId: String,
-        val contactName: String,
-        val mathUsername: String = ""
-    ) : CalculatorEvent()
     data class ShowToast(val message: String) : CalculatorEvent()
 }
 
@@ -77,8 +67,6 @@ class CalculatorViewModel(
             displayValue = newDisplay,
             isNewNumber = false
         )
-
-        checkCurrentExpressionForContacts()
     }
 
     fun onDecimal() {
@@ -111,65 +99,19 @@ class CalculatorViewModel(
             formulaString = "${formatNumber(firstOperand!!)} $op",
             isNewNumber = true
         )
-
-        checkCurrentExpressionForContacts()
-    }
-
-    private fun getCurrentFullFormula(): String {
-        val formula = _uiState.value.formulaString.trim()
-        val display = _uiState.value.displayValue.trim()
-        val raw = if (formula.isNotEmpty()) "$formula $display" else display
-        return com.example.utils.MathUsernameGenerator.normalizeFormula(raw)
-    }
-
-    private fun checkCurrentExpressionForContacts() {
-        val full = getCurrentFullFormula()
-        if (com.example.utils.MathUsernameGenerator.isMathExpression(full) && full != "99+99") {
-            viewModelScope.launch {
-                val contact = repository.findChatByMathUsername(full)
-                _uiState.value = _uiState.value.copy(
-                    matchedContact = contact,
-                    currentMathFormulaCandidate = full
-                )
-            }
-        } else {
-            _uiState.value = _uiState.value.copy(
-                matchedContact = null,
-                currentMathFormulaCandidate = null
-            )
-        }
     }
 
     fun onEquals() {
         val formula = _uiState.value.formulaString
         val display = _uiState.value.displayValue
 
-        // SECRET MASTER TRIGGER: Check for 99+99
+        // SECRET MASTER TRIGGER: Check for 99+99 or custom PIN
         val normalizedFormula = (formula + display).replace(" ", "").replace("×", "*").replace("÷", "/")
         if (normalizedFormula == "99+99" || secretPattern.endsWith("99+99") || (firstOperand == 99.0 && pendingOperator == "+" && display == "99")) {
             viewModelScope.launch {
                 _events.emit(CalculatorEvent.OpenSecretVault)
             }
             return
-        }
-
-        val fullNormalized = getCurrentFullFormula()
-
-        // MATH USERNAME CONTACT TRIGGER
-        if (com.example.utils.MathUsernameGenerator.isMathExpression(fullNormalized)) {
-            viewModelScope.launch {
-                val contact = repository.findChatByMathUsername(fullNormalized)
-                if (contact != null) {
-                    _events.emit(CalculatorEvent.OpenChatWithContact(contact.id, contact.contactName))
-                    return@launch
-                } else {
-                    // It's a valid math username formula, but not in existing contacts -> prompt to add
-                    _uiState.value = _uiState.value.copy(
-                        showAddContactDialog = true,
-                        pendingAddFormula = fullNormalized
-                    )
-                }
-            }
         }
 
         if (firstOperand != null && pendingOperator != null) {
@@ -182,9 +124,7 @@ class CalculatorViewModel(
                 displayValue = formattedResult,
                 formulaString = "$fullExpression =",
                 previousResult = formattedResult,
-                isNewNumber = true,
-                matchedContact = null,
-                currentMathFormulaCandidate = null
+                isNewNumber = true
             )
 
             // Save to DB
@@ -196,27 +136,6 @@ class CalculatorViewModel(
             pendingOperator = null
             secretPattern = ""
         }
-    }
-
-    fun onStartChatWithMatchedContact() {
-        val contact = _uiState.value.matchedContact ?: return
-        viewModelScope.launch {
-            _events.emit(CalculatorEvent.OpenChatWithContact(contact.id, contact.contactName, contact.mathUsername))
-        }
-    }
-
-    fun onConfirmAddContact(name: String) {
-        val formula = _uiState.value.pendingAddFormula
-        if (formula.isBlank()) return
-        viewModelScope.launch {
-            val newChat = repository.createOrGetChatWithMathUser(formula, name)
-            _uiState.value = _uiState.value.copy(showAddContactDialog = false, pendingAddFormula = "")
-            _events.emit(CalculatorEvent.OpenChatWithContact(newChat.id, newChat.contactName, newChat.mathUsername))
-        }
-    }
-
-    fun dismissAddContactDialog() {
-        _uiState.value = _uiState.value.copy(showAddContactDialog = false, pendingAddFormula = "")
     }
 
     fun onClear() {
@@ -235,7 +154,6 @@ class CalculatorViewModel(
         } else {
             _uiState.value = _uiState.value.copy(displayValue = "0", isNewNumber = true)
         }
-        checkCurrentExpressionForContacts()
     }
 
     fun onPercent() {

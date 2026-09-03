@@ -18,7 +18,8 @@ data class ChatEntity(
     val unreadCount: Int = 0,
     val disappearingTimerSeconds: Int = 0, // 0 = disabled, 5, 10, 30, 60, etc.
     val securityFingerprint: String = "",
-    val isMuted: Boolean = false
+    val isMuted: Boolean = false,
+    val lastSeen: Long = System.currentTimeMillis()
 )
 
 enum class MediaType {

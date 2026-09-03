@@ -416,4 +416,32 @@ class VaultViewModel(
             _toastEvents.emit(VaultToastEvent.Success("Semua obrolan dan kontak dummy telah dibersihkan."))
         }
     }
+
+    fun deleteMessage(message: MessageEntity) {
+        viewModelScope.launch {
+            repository.deleteMessage(message, syncBothSides = true)
+            _toastEvents.emit(VaultToastEvent.Info("Pesan dihapus untuk kedua perangkat."))
+        }
+    }
+
+    fun clearCurrentChat(chatId: String) {
+        viewModelScope.launch {
+            repository.clearChatMessages(chatId, syncBothSides = true)
+            _toastEvents.emit(VaultToastEvent.Info("Obrolan dibersihkan untuk kedua perangkat."))
+        }
+    }
+
+    fun deleteChatRoom(chatId: String) {
+        viewModelScope.launch {
+            repository.deleteChatRoom(chatId, syncBothSides = true)
+            if (_selectedChatId.value == chatId) {
+                closeConversation()
+            }
+            _toastEvents.emit(VaultToastEvent.Info("Ruang obrolan dihapus untuk kedua perangkat."))
+        }
+    }
+
+    fun setUserPresence(isOnline: Boolean) {
+        repository.firebaseSyncManager.updateUserPresence(isOnline)
+    }
 }

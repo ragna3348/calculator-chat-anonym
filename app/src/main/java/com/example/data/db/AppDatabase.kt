@@ -25,7 +25,7 @@ import kotlinx.coroutines.launch
         ReminderEntity::class,
         CalculationHistoryEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

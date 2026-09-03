@@ -56,6 +56,7 @@ class FirebaseSyncManager(
     private var firestore: FirebaseFirestore? = null
     private var auth: FirebaseAuth? = null
     private var messageListener: ListenerRegistration? = null
+    private var presenceListener: ListenerRegistration? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
     init {
@@ -98,12 +99,13 @@ class FirebaseSyncManager(
                     lastSyncTime = System.currentTimeMillis()
                 )
 
-                // Register user math formula on cloud directory
+                // Register user math formula on cloud directory & listen
                 val myMathUsername = settingsManager.settings.value.mathUsername
                 if (myMathUsername.isNotBlank()) {
                     registerMathUserOnCloud(myMathUsername)
                     startListeningForIncomingMessages(myMathUsername)
                 }
+                startListeningPresence()
 
             } catch (e: Exception) {
                 Log.e(TAG, "Firebase initialization error", e)
@@ -135,6 +137,48 @@ class FirebaseSyncManager(
         }
     }
 
+    fun updateUserPresence(isOnline: Boolean) {
+        val db = firestore ?: return
+        val myMath = settingsManager.settings.value.mathUsername
+        if (myMath.isBlank()) return
+        scope.launch {
+            try {
+                val normalized = com.example.utils.MathUsernameGenerator.normalizeFormula(myMath)
+                val updateData = mapOf(
+                    "isOnline" to isOnline,
+                    "lastSeen" to System.currentTimeMillis()
+                )
+                db.collection(COLLECTION_USERS).document(normalized).update(updateData).await()
+            } catch (e: Exception) {
+                // If doc doesn't exist yet, re-register
+                if (isOnline) {
+                    registerMathUserOnCloud(myMath)
+                }
+            }
+        }
+    }
+
+    fun startListeningPresence() {
+        val db = firestore ?: return
+        presenceListener?.remove()
+        try {
+            presenceListener = db.collection(COLLECTION_USERS)
+                .addSnapshotListener { snapshots, error ->
+                    if (error != null || snapshots == null) return@addSnapshotListener
+                    scope.launch {
+                        for (doc in snapshots.documents) {
+                            val mathUsername = doc.getString("mathUsername") ?: doc.id
+                            val isOnline = doc.getBoolean("isOnline") ?: false
+                            val lastSeen = doc.getLong("lastSeen") ?: System.currentTimeMillis()
+                            dao.updateChatOnlineStatus(mathUsername, isOnline, lastSeen)
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error setting up presence listener: ${e.message}")
+        }
+    }
+
     fun startListeningForIncomingMessages(myMathUsername: String) {
         val db = firestore ?: return
         val normalizedMyId = com.example.utils.MathUsernameGenerator.normalizeFormula(myMathUsername)
@@ -163,18 +207,10 @@ class FirebaseSyncManager(
                                 try {
                                     val rawSender = doc.getString("senderMathUsername") ?: continue
                                     val senderMathUsername = com.example.utils.MathUsernameGenerator.normalizeFormula(rawSender)
-                                    val ciphertext = doc.getString("ciphertext") ?: continue
-                                    val iv = doc.getString("iv") ?: ""
-                                    val salt = doc.getString("salt") ?: ""
-                                    val checksum = doc.getString("checksum") ?: ""
-                                    val mediaTypeStr = doc.getString("mediaType") ?: MediaType.TEXT.name
-                                    val mediaType = try { MediaType.valueOf(mediaTypeStr) } catch (_: Exception) { MediaType.TEXT }
-                                    val mediaFileName = doc.getString("mediaFileName")
-                                    val mediaFileSize = doc.getString("mediaFileSizeFormatted")
+                                    val action = doc.getString("action") ?: "MESSAGE"
                                     val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
                                     val senderDisplayName = doc.getString("senderDisplayName") ?: "Kontak #$senderMathUsername"
 
-                                    // Find or create local chat for this math contact
                                     val standardChatId = "user_" + senderMathUsername.replace("+", "p").replace("-", "m").replace("×", "x").replace("÷", "d")
                                     var chat = dao.getChatByMathUsernameDirect(senderMathUsername) ?: dao.getChatByIdDirect(standardChatId)
                                     val targetChatId = if (chat == null) {
@@ -200,12 +236,71 @@ class FirebaseSyncManager(
                                         chat.id
                                     }
 
+                                    // Handle different actions from peer
+                                    when (action) {
+                                        "DELETE_MESSAGE" -> {
+                                            val targetChecksum = doc.getString("targetChecksum") ?: ""
+                                            val targetTimestamp = doc.getLong("targetTimestamp") ?: 0L
+                                            dao.deleteMessageByChecksumOrTimestamp(targetChatId, targetChecksum, targetTimestamp)
+                                            doc.reference.update("delivered", true)
+                                            continue
+                                        }
+                                        "CLEAR_CHAT" -> {
+                                            dao.clearMessagesForChat(targetChatId)
+                                            dao.updateChatPreview(targetChatId, "Obrolan telah dibersihkan", timestamp, 0)
+                                            doc.reference.update("delivered", true)
+                                            continue
+                                        }
+                                        "SET_TIMER" -> {
+                                            val timerSeconds = doc.getLong("timerSeconds")?.toInt() ?: 0
+                                            dao.updateDisappearingTimer(targetChatId, timerSeconds)
+                                            val notice = if (timerSeconds > 0) {
+                                                "Kontak mengatur pesan musnah otomatis ke $timerSeconds detik."
+                                            } else {
+                                                "Kontak mematikan pesan musnah otomatis."
+                                            }
+                                            val encNotice = CryptoEngine.encrypt(notice)
+                                            dao.insertMessage(
+                                                MessageEntity(
+                                                    chatId = targetChatId,
+                                                    senderId = "system",
+                                                    senderName = "Sistem Vault",
+                                                    ciphertext = encNotice.ciphertext,
+                                                    iv = encNotice.iv,
+                                                    salt = encNotice.salt,
+                                                    checksum = encNotice.checksum,
+                                                    mediaType = MediaType.SYSTEM,
+                                                    timestamp = timestamp,
+                                                    isRead = true,
+                                                    status = MessageStatus.READ
+                                                )
+                                            )
+                                            doc.reference.update("delivered", true)
+                                            continue
+                                        }
+                                    }
+
+                                    // Default action: MESSAGE
+                                    val ciphertext = doc.getString("ciphertext") ?: continue
+                                    val iv = doc.getString("iv") ?: ""
+                                    val salt = doc.getString("salt") ?: ""
+                                    val checksum = doc.getString("checksum") ?: ""
+                                    val mediaTypeStr = doc.getString("mediaType") ?: MediaType.TEXT.name
+                                    val mediaType = try { MediaType.valueOf(mediaTypeStr) } catch (_: Exception) { MediaType.TEXT }
+                                    val mediaFileName = doc.getString("mediaFileName")
+                                    val mediaFileSize = doc.getString("mediaFileSizeFormatted")
+                                    val burnSeconds = doc.getLong("burnSeconds") ?: 0L
+
                                     // Decrypt preview or show encrypted note
                                     val decryptedText = try {
                                         CryptoEngine.decrypt(ciphertext, iv, salt)
                                     } catch (e: Exception) {
                                         "Pesan terenkripsi diterima"
                                     }
+
+                                    val burnTimestamp = if (burnSeconds > 0) {
+                                        timestamp + (burnSeconds * 1000L)
+                                    } else null
 
                                     val incomingMsg = MessageEntity(
                                         chatId = targetChatId,
@@ -220,9 +315,15 @@ class FirebaseSyncManager(
                                         mediaFileSizeFormatted = mediaFileSize,
                                         timestamp = timestamp,
                                         isRead = false,
+                                        burnTimestamp = burnTimestamp,
+                                        isSelfDestructing = burnSeconds > 0,
                                         status = MessageStatus.DELIVERED,
                                         isEncrypted = true
                                     )
+
+                                    if (burnSeconds > 0 && chat?.disappearingTimerSeconds != burnSeconds.toInt()) {
+                                        dao.updateDisappearingTimer(targetChatId, burnSeconds.toInt())
+                                    }
 
                                     val currentUnread = chat?.unreadCount ?: 0
                                     dao.insertMessage(incomingMsg)
@@ -265,7 +366,8 @@ class FirebaseSyncManager(
         checksum: String,
         mediaType: MediaType,
         mediaFileName: String? = null,
-        mediaFileSizeFormatted: String? = null
+        mediaFileSizeFormatted: String? = null,
+        burnSeconds: Int = 0
     ): Boolean {
         val db = firestore ?: return false
         return try {
@@ -273,6 +375,7 @@ class FirebaseSyncManager(
             val normalizedReceiver = com.example.utils.MathUsernameGenerator.normalizeFormula(receiverMathUsername)
 
             val payload = hashMapOf(
+                "action" to "MESSAGE",
                 "senderMathUsername" to normalizedSender,
                 "receiverMathUsername" to normalizedReceiver,
                 "senderDisplayName" to senderDisplayName,
@@ -283,6 +386,7 @@ class FirebaseSyncManager(
                 "mediaType" to mediaType.name,
                 "mediaFileName" to (mediaFileName ?: ""),
                 "mediaFileSizeFormatted" to (mediaFileSizeFormatted ?: ""),
+                "burnSeconds" to burnSeconds.toLong(),
                 "timestamp" to System.currentTimeMillis(),
                 "delivered" to false
             )
@@ -298,8 +402,91 @@ class FirebaseSyncManager(
         }
     }
 
+    suspend fun sendDeleteMessageToCloud(
+        senderMathUsername: String,
+        receiverMathUsername: String,
+        checksum: String,
+        timestamp: Long
+    ): Boolean {
+        val db = firestore ?: return false
+        return try {
+            val normalizedSender = com.example.utils.MathUsernameGenerator.normalizeFormula(senderMathUsername)
+            val normalizedReceiver = com.example.utils.MathUsernameGenerator.normalizeFormula(receiverMathUsername)
+
+            val payload = hashMapOf(
+                "action" to "DELETE_MESSAGE",
+                "senderMathUsername" to normalizedSender,
+                "receiverMathUsername" to normalizedReceiver,
+                "targetChecksum" to checksum,
+                "targetTimestamp" to timestamp,
+                "timestamp" to System.currentTimeMillis(),
+                "delivered" to false
+            )
+
+            db.collection(COLLECTION_MESSAGES).add(payload).await()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send delete action to cloud", e)
+            false
+        }
+    }
+
+    suspend fun sendClearChatToCloud(
+        senderMathUsername: String,
+        receiverMathUsername: String
+    ): Boolean {
+        val db = firestore ?: return false
+        return try {
+            val normalizedSender = com.example.utils.MathUsernameGenerator.normalizeFormula(senderMathUsername)
+            val normalizedReceiver = com.example.utils.MathUsernameGenerator.normalizeFormula(receiverMathUsername)
+
+            val payload = hashMapOf(
+                "action" to "CLEAR_CHAT",
+                "senderMathUsername" to normalizedSender,
+                "receiverMathUsername" to normalizedReceiver,
+                "timestamp" to System.currentTimeMillis(),
+                "delivered" to false
+            )
+
+            db.collection(COLLECTION_MESSAGES).add(payload).await()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send clear chat action to cloud", e)
+            false
+        }
+    }
+
+    suspend fun sendTimerUpdateToCloud(
+        senderMathUsername: String,
+        receiverMathUsername: String,
+        timerSeconds: Int
+    ): Boolean {
+        val db = firestore ?: return false
+        return try {
+            val normalizedSender = com.example.utils.MathUsernameGenerator.normalizeFormula(senderMathUsername)
+            val normalizedReceiver = com.example.utils.MathUsernameGenerator.normalizeFormula(receiverMathUsername)
+
+            val payload = hashMapOf(
+                "action" to "SET_TIMER",
+                "senderMathUsername" to normalizedSender,
+                "receiverMathUsername" to normalizedReceiver,
+                "timerSeconds" to timerSeconds.toLong(),
+                "timestamp" to System.currentTimeMillis(),
+                "delivered" to false
+            )
+
+            db.collection(COLLECTION_MESSAGES).add(payload).await()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send timer update to cloud", e)
+            false
+        }
+    }
+
     fun stopListening() {
         messageListener?.remove()
         messageListener = null
+        presenceListener?.remove()
+        presenceListener = null
     }
 }
