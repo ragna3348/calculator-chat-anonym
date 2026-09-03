@@ -1,0 +1,7 @@
+{
+  "name": "Kalkulator",
+  "description": "Aplikasi kalkulator pintar dengan brankas chat rahasia terenkripsi end-to-end (99+99), pesan hapus otomatis, cadangan cloud, biometrik, dan dukungan pelanggan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
